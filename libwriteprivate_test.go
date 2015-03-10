@@ -1,6 +1,7 @@
 package writeprivate
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 )
@@ -27,7 +28,7 @@ func TestEncDec(t *testing.T) {
 
 	fmt.Println(string(decryptedText))
 
-	if string(plaintext) != string(decryptedText) {
-		t.Fatal("Decrypted text mismatch.")
+	if !bytes.Equal([]byte(plaintext), decryptedText) {
+		t.Errorf("Plaintext mismatch: got %x vs %x", plaintext, decryptedText)
 	}
 }
