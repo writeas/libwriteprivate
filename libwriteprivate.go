@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"golang.org/x/crypto/pbkdf2"
-	"io"
 	"strings"
 )
 
@@ -30,39 +29,40 @@ func Encrypt(passphrase, plaintext string) ([]byte, error) {
 	// Derive key from passphrase
 	k := pbkdf2.Key([]byte(passphrase), s, iterationCount, keyLen, sha256.New)
 
-	// Encrypt plaintext
+	// Encrypt plaintext with AES-GCM
 	block, err := aes.NewCipher(k)
 	if err != nil {
 		return nil, err
 	}
 
-	// Include IV at the beginning of the ciphertext.
-	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
-	iv := ciphertext[:aes.BlockSize]
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
 		return nil, err
 	}
 
-	stream := cipher.NewCFBEncrypter(block, iv)
-	stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(plaintext))
+	// Generate nonce
+	ns := gcm.NonceSize()
+	nonce := make([]byte, ns)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
 
-	ciphertext = encodeBase64(ciphertext)
-	ciphertext = append(ciphertext, delimiter)
-	ciphertext = append(ciphertext, encodeBase64(s)...)
+	ciphertext := gcm.Seal(nil, nonce, []byte(plaintext), nil)
 
-	return ciphertext, nil
+	// Build text output in the format:
+	// NonceCiphertextDelimiterSalt
+	outtext := encodeBase64(append(nonce, ciphertext...))
+	outtext = append(outtext, delimiter)
+	outtext = append(outtext, encodeBase64(s)...)
+
+	return outtext, nil
 }
 
 func Decrypt(passphrase string, ciphertext []byte) ([]byte, error) {
-	// Get fields
+	// Get ciphertext and salt fields
 	fields := strings.Split(string(ciphertext), string(delimiter))
 	ciphertext = decodeBase64(fields[0])
 	s := decodeBase64(fields[1])
-
-	// Validate data
-	if len(ciphertext) < aes.BlockSize {
-		return nil, errors.New("Ciphertext is too short")
-	}
 
 	// Derive key from passphrase and stored salt
 	k := pbkdf2.Key([]byte(passphrase), s, iterationCount, keyLen, sha256.New)
@@ -73,10 +73,21 @@ func Decrypt(passphrase string, ciphertext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	iv := ciphertext[:aes.BlockSize]
-	plaintext := ciphertext[aes.BlockSize:]
-	cfb := cipher.NewCFBDecrypter(block, iv)
-	cfb.XORKeyStream(plaintext, plaintext)
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	ns := gcm.NonceSize()
+
+	// Validate data
+	if len(ciphertext) < ns {
+		return nil, errors.New("Ciphertext is too short")
+	}
+
+	nonce := ciphertext[:ns]
+	ciphertext = ciphertext[ns:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, err
 	}
